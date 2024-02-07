@@ -1,0 +1,828 @@
+---
+title: "Analise de Dados"
+author: "Grupo 2 - Arnaldo, Gabriel, Marcello"
+date: "2023-11-20"
+output: html_document
+encoding: UTF-8
+---
+
+# Descrição do problema e análise das métricas de desempenho
+
+O objetivo do trabalho é prever se o paciente vai ter AVC, antes que ele de fato o tenha.
+Vamos utilizar o framework 'tidymodels' para modelar o dataset, empregando técnicas de 'Boosting' e 'Random Forest', ambas com e sem ajuste de parâmetros ('Tuning'). 
+Além disso, usaremos o Keras para desenvolver um modelo baseado em rede neural. 
+Nosso foco principal será minimizar falsos negativos, visando identificar com antecedência os pacientes em risco de derrame para prevenir fatalidades.
+
+
+
+## Setup e Bibliotecas
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache= TRUE , warning = FALSE, message=FALSE)
+options(digits = 4) 
+```
+
+```{r Bibliotecas,message=FALSE, include=FALSE}
+library(ggcorrplot)
+library(conflicted)
+library(gbm)
+library(xgboost)
+library(pdp)
+library(survival)
+library(survminer)
+library(ISLR2) 
+library(naniar) 
+library(ranger) 
+library(rpart)
+library(rpart.plot)
+library(partykit) 
+library(GGally)
+library(vip) 
+library(tidymodels)
+library(DescTools)
+library(MASS) 
+library(glue)
+library(gapminder)
+library(ISLR)
+library(glmnet)
+library(plotmo)
+library(readxl)
+library(rmarkdown)
+library(devtools)
+library(tidyverse)
+library(skimr)
+library(dplyr)
+library(patchwork)
+library(rsample)
+library(FNN)
+library(yardstick)
+library(pROC)
+library(doParallel)
+
+library(tensorflow) 
+library("reticulate")
+#reticulate::use_python("C://ProgramData//anaconda3//python.exe")  #aquii
+library(devtools)
+library(keras)
+mnist <- dataset_mnist()
+library(topicmodels)
+library(wordcloud)
+library(tidytext)
+library(tm)
+library(keras)
+library(baguette)
+library(stringi)
+library(factoextra)
+library(ggrepel)
+library(patchwork)
+
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+```
+
+# Input da Base e ajustes básicos
+```{r, leitura}
+df <- read.csv("C:/Users/arnch/OneDrive/Documentos/Insper/healthcare-dataset-stroke-data.csv")
+
+df  %>%
+   lapply(type_sum) %>%
+   as_tibble() %>%
+   pivot_longer(cols = 1:ncol(df),
+                names_to = "Coluna",
+               values_to = "Tipo") %>%
+   inner_join(
+    df %>%
+       summarise(across(everything(), ~sum(is.na(.)))) %>%
+       pivot_longer(cols = 1:ncol(df),
+                    names_to = "Coluna",
+                   values_to = "Total NA")
+  )
+
+df %>% head(5)  %>% glimpse()
+
+df %>% skim() %>% View()
+
+print(paste("Percentual de casos com derrames:", 100 * (df %>% filter(stroke == 1) %>% nrow() / nrow(df))))
+```
+
+arruma os tipos das variáveis
+```{r}
+df <- df %>%
+  mutate(
+          gender = as.factor(gender),
+          hypertension = as.factor(hypertension),
+          heart_disease = as.factor(heart_disease),
+          ever_married = as.factor(ever_married),
+          work_type = as.factor(work_type),
+          Residence_type = as.factor(Residence_type),
+          smoking_status = as.factor(smoking_status),
+          stroke = as.factor(stroke)
+          )
+
+df$bmi %>% table() %>% sort(decreasing = TRUE) %>% head()
+
+#criamos feature flag
+df$flag <- ifelse(df$bmi == "N/A", 1, 0)
+
+df$bmi <- ifelse(df$bmi == "N/A", NA, df$bmi)
+
+df <- df %>%
+  mutate(
+          flag = as.factor(flag),
+          bmi = as.double(bmi),
+          )
+
+df %>% dplyr::select(bmi, flag) %>% head(5) %>% glimpse()
+df %>% head(5) %>% glimpse()
+```
+
+Exclusão de categoria com representatividade muito baixa
+```{r}
+# input de dados ----------------------------------------------------------
+categorical_variables <- df %>%
+  select_if(is.factor) %>%
+  names()
+
+#df[["gender"]] %>% str
+#df["gender"] %>% str
+
+for (i in categorical_variables) {
+  cat("Variable:", i, "\n")
+  print(table(df[[i]]))
+  cat("\n")
+}
+
+# Variavel Weathersit tem uma categoria com apenas 1 dado nela,
+# iremos retirar pois não será possível realizar a regressão dessa forma
+
+df %>% nrow()
+df <- df %>% plotly::filter(gender != "Other")
+df %>% nrow()
+```
+
+Clusterizaçâo: k-means
+```{r, cluster1}
+# Verificar nulos da coluna BMI
+df  %>%
+   lapply(type_sum) %>%
+   as_tibble() %>%
+   pivot_longer(cols = 1:ncol(df),
+                names_to = "Coluna",
+               values_to = "Tipo") %>%
+   inner_join(
+    df %>%
+       summarise(across(everything(), ~sum(is.na(.)))) %>%
+       pivot_longer(cols = 1:ncol(df),
+                    names_to = "Coluna",
+                   values_to = "Total NA")
+  )
+
+# Aplicar mediana aos nulos
+df$bmi[is.na(df$bmi)] <- median(df$bmi, na.rm=TRUE)
+
+# Verificar nulos novamente
+df_cluster  %>%
+   lapply(type_sum) %>%
+   as_tibble() %>%
+   pivot_longer(cols = 1:ncol(df_cluster),
+                names_to = "Coluna",
+               values_to = "Tipo") %>%
+   inner_join(
+    df_cluster %>%
+       summarise(across(everything(), ~sum(is.na(.)))) %>%
+       pivot_longer(cols = 1:ncol(df_cluster),
+                    names_to = "Coluna",
+                   values_to = "Total NA")
+  )
+
+# Reduzir dataset apenas para indentificador e variáveis numéricas
+df_cluster <- df %>% dplyr::select('id','age','avg_glucose_level','bmi')
+
+# Ajustar estrutura do dataset
+df_cluster <- as.data.frame(df_cluster)
+rownames(df_cluster) <- df_cluster$id #coloca id no indexador
+df_cluster$id <- NULL #remove coluna id
+View(df_cluster)
+
+# Normalizar dados
+df_cluster_scaled <- scale(df_cluster, center = TRUE, scale = TRUE)
+View(df_cluster_scaled)
+
+# Encontrar número de clusters ideal de acordo com o método Silhouette
+fviz_nbclust(df_cluster_scaled, kmeans, method = "silhouette")
+
+# Criar coluna Cluster no dataset principal
+set.seed(1)
+df_final_cluster <- df %>% 
+  mutate(cluster = factor(kmeans(df_cluster_scaled, centers = 2, nstart = 10)$cluster))
+
+df <- df_final_cluster
+```
+
+
+Analisar clusters
+```{r, cluster analise}
+# Calcular médias por cluster
+medias <- df_final_cluster %>%
+            group_by(cluster) %>%
+              plotly::summarise(across(everything(), list(mean)))
+
+medias %>% glimpse()
+
+# Plotar Cluster vs. age
+df_final_cluster %>%
+  ggplot(aes(x=age, color=cluster, fill=cluster)) +
+  geom_histogram(position="dodge")+
+  geom_vline(data=medias, aes(xintercept=age_1, color=cluster),
+             linetype="dashed")+
+  theme(legend.position="top")+
+  labs(x = "age", title = "Cluster vs. age")
+
+# Plotar Cluster vs. avg_glucose_level
+df_final_cluster %>%
+  ggplot(aes(x=avg_glucose_level, color=cluster, fill=cluster)) +
+  geom_histogram(position="dodge")+
+  geom_vline(data=medias, aes(xintercept=avg_glucose_level_1, color=cluster),
+             linetype="dashed")+
+  theme(legend.position="top")+
+  labs(x = "avg_glucose_level", title = "Cluster vs. avg_glucose_level")
+
+
+# Plotar Cluster vs. bmi
+df_final_cluster %>%
+  ggplot(aes(x=bmi, color=cluster, fill=cluster)) +
+  geom_histogram(position="dodge")+
+  geom_vline(data=medias, aes(xintercept=bmi_1, color=cluster),
+             linetype="dashed")+
+  theme(legend.position="top")+
+  labs(x = "bmi", title = "Cluster vs. bmi")
+
+# Plotar Cluster vs. stroke
+df_grouped_stroke <- df_final_cluster %>%
+  group_by(cluster,stroke) %>%
+    plotly::summarise(total_count = n())
+
+
+df_grouped_stroke %>%
+  group_by(cluster) %>%
+    plotly::summarise(pct_stroke = total_count / sum(total_count))
+
+df_grouped_stroke %>%
+  ggplot(aes(x = stroke, y = total_count, fill = cluster)) +
+    # Implement a grouped bar chart
+  geom_bar(position = "dodge", stat = "identity")+
+  labs(x = "stroke", y= "quantidade", title = "Cluster vs. stroke")
+```
+Podemos verificar que, em relação ao Cluster 2, no Cluster 1:
+
+- As pessoas são bem mais velhas (a média é 58 x 22)
+- As pessoas tem níveis de glicose mais altos (a média é 117 x 91)
+- As pessoas tem níveis IMC (BMI) mais altos (a média é 32 x 24)
+- AS pessoas sofrem mais infartos (8% x 0.4%)
+
+
+# Análise Exploratória
+```{r}
+# Plotar bmi vs. age
+df_final_cluster %>%
+  ggplot(aes(x=age, y=bmi,color=cluster, fill=cluster)) +
+  geom_point(alpha=.5)+
+  theme(legend.position="top")+
+  labs(x = "age", y='bmi', title = "bmi vs. age")+ 
+  theme_minimal()+
+  theme_bw()+
+  facet_grid(~ stroke, scale = "free_y") 
+
+
+# Plotar bmi vs. avg_glucose_level
+
+df_final_cluster %>%
+  ggplot(aes(x=avg_glucose_level, y=bmi,color=cluster, fill=cluster)) +
+  geom_point(alpha=.5)+
+  theme(legend.position="top")+
+  labs(x = "avg_glucose_level", y='bmi', title = "bmi vs. avg_glucose_level")+ 
+  theme_minimal()+
+  theme_bw()+
+  facet_grid(~ stroke, scale = "free_y") 
+
+# Plotar avg_glucose_level vs. age
+
+df_final_cluster %>%
+  ggplot(aes(x=age, y=avg_glucose_level,color=cluster, fill=cluster)) +
+  geom_point(alpha=.5)+
+  theme(legend.position="top")+
+  labs(x = "age", y='avg_glucose_level', title = "age vs. avg_glucose_level")+ 
+  theme_minimal()+
+  theme_bw()+
+  facet_grid(~ stroke, scale = "free_y") 
+
+
+
+# Plotar gender vs. stroke
+
+df_grouped_stroke_gender <- df_final_cluster %>%
+  group_by(gender,stroke) %>%
+    plotly::summarise(total_count = n())
+
+
+df_grouped_stroke_gender %>%
+  ggplot(aes(x = gender, y = total_count, fill = gender)) +
+  geom_bar(position = "dodge", stat = "identity") +
+  labs(x = "gender", title = "gender vs. stroke") + 
+  theme_minimal() +
+  theme_bw() +
+  facet_grid(stroke ~ ., scales = "free_y")
+
+# Plotar hypertension vs. stroke
+
+df_grouped_stroke_hypertension <- df_final_cluster %>%
+  group_by(hypertension,stroke) %>%
+    plotly::summarise(total_count = n())
+
+
+df_grouped_stroke_hypertension %>%
+  ggplot(aes(x = hypertension  , y = total_count, fill = hypertension)) +
+    # Implement a grouped bar chart
+  geom_bar(position = "dodge", stat = "identity")+
+  labs(x = "stroke", title = "hypertension vs. stroke")+ 
+  theme_minimal()+
+  theme_bw() +
+  facet_grid(stroke ~ ., scales = "free_y")
+
+
+# Plotar heart_disease vs. stroke
+
+df_grouped_stroke_heart_disease <- df_final_cluster %>%
+  group_by(heart_disease,stroke) %>%
+    plotly::summarise(total_count = n())
+
+
+df_grouped_stroke_heart_disease %>%
+  ggplot(aes(x = heart_disease  , y = total_count, fill = heart_disease)) +
+    # Implement a grouped bar chart
+  geom_bar(position = "dodge", stat = "identity")+
+  labs(x = "stroke", title = "heart_disease vs. stroke")+ 
+  theme_minimal()+
+  theme_bw() +
+  facet_grid(stroke ~ ., scales = "free_y")
+
+# Plotar ever_married vs. stroke
+
+df_grouped_stroke_ever_married <- df_final_cluster %>%
+  group_by(ever_married,stroke) %>%
+    plotly::summarise(total_count = n())
+
+
+df_grouped_stroke_ever_married %>%
+  ggplot(aes(x = ever_married  , y = total_count, fill = ever_married)) +
+    # Implement a grouped bar chart
+  geom_bar(position = "dodge", stat = "identity")+
+  labs(x = "stroke", title = "ever_married vs. stroke")+ 
+  theme_minimal()+
+  theme_bw() +
+  facet_grid(stroke ~ ., scales = "free_y")
+
+# Plotar work_type vs. stroke
+
+df_grouped_stroke_work_type <- df_final_cluster %>%
+  group_by(work_type,stroke) %>%
+    plotly::summarise(total_count = n())
+
+df_grouped_stroke_work_type %>%
+  ggplot(aes(x = work_type  , y = total_count, fill = work_type)) +
+    # Implement a grouped bar chart
+  geom_bar(position = "dodge", stat = "identity")+
+  labs(x = "stroke", title = "work_type vs. stroke")+ 
+  theme_minimal()+
+  theme_bw() +
+  facet_grid(stroke ~ ., scales = "free_y")
+
+# Plotar Residence_type vs. stroke
+
+df_grouped_stroke_Residence_type <- df_final_cluster %>%
+  group_by(Residence_type,stroke) %>%
+    plotly::summarise(total_count = n())
+
+df_grouped_stroke_Residence_type %>%
+  ggplot(aes(x = Residence_type  , y = total_count, fill = Residence_type)) +
+    # Implement a grouped bar chart
+  geom_bar(position = "dodge", stat = "identity")+
+  labs(x = "stroke", title = "Residence_type vs. stroke")+ 
+  theme_minimal()+
+  theme_bw() +
+  facet_grid(stroke ~ ., scales = "free_y")
+
+# Plotar smoking_status vs. stroke
+
+df_grouped_stroke_smoking_status <- df_final_cluster %>%
+  group_by(smoking_status,stroke) %>%
+    plotly::summarise(total_count = n())
+
+df_grouped_stroke_smoking_status %>%
+  ggplot(aes(x = smoking_status  , y = total_count, fill = smoking_status)) +
+    # Implement a grouped bar chart
+  geom_bar(position = "dodge", stat = "identity")+
+  labs(x = "stroke", title = "smoking_status vs. stroke")+ 
+  theme_minimal()+
+  theme_bw() +
+  facet_grid(stroke ~ ., scales = "free_y")
+
+```
+Podemos verificar que:
+
+- **Age x BMI**: Pessoas no cluster 1 são majoritariamente mais velhas e com valores mais altos de IMC, contendo quase todos os indivíduos que tiveram derrame;
+- **BMI x avg_glucose_level e age x avg_glucose_level**:  maior parte dos indivíduos do cluster 2 tem nível médio de glicose abaixo de 150, enquanto no cluster 1 parece haver uma separação mais equilibrada, tendo uma concentração entre 50 e 125, e outra entre 200 e 250;
+- **Gender**: A proporção de homens e mulheres dentro dos grupos de pacientes que tiveram e não tiveram derrame é parecida, indicando que o gênero não possui muita relevância para ocorrência do evento;
+- **hypertension**: Pacientes com hipertensão tem maior proporção dentro do grupo que apresentou derrame em relação ao que não apresentou (26% x 8%);
+- **heart_disease**: Pacientes com doenças cardiacas tem maior proporção dentro do grupo que apresentou derrame em relação ao que não apresentou (18% x 4%);
+- **ever_married**: Pacientes que são ou já foram casados tem maior proporção dentro do grupo que apresentou derrame em relação ao que não apresentou (88% x 64%);
+- **work_type**: Pacientes que trabalham na área privada tem proporções parecidas dentro dos grupos que tiveram e não tiveram derrame, porém autônomos ('Self-employed') representam 26% do grupo com derrame enquanto são apenas 15% do grupo que não apresentou;
+- **Residence_type**: A proporção de pacientes que vivem em area urbana e rural dentro dos grupos de que tiveram e não tiveram derrame é parecida, indicando que o o tipo de residência não possui muita relevância para ocorrência do evento;
+- **smoking_status**: formerly smoked  representam 28% do grupo com derrame enquanto são apenas 16% do grupo que não apresentou, demais categorias conhecidas possuem proporções semelhantes;
+
+
+# Split da base em treino e teste
+```{r}
+set.seed(234)
+split <- initial_split(df, prop = 0.8, strata = stroke)
+treinamento <- training(split)
+teste <- testing(split)
+
+treinamento$stroke %>% table() #4,7% 4,8%
+teste$stroke %>% table() #5,4% 5,3%
+```
+
+# Criação do Tibble de Comparativo de Desempenho
+Agora iremos criar um tibble para armazenar os resultados dos modelos
+```{r Criação da Tabela de Resultados}
+desempenho <- tibble(
+  prob = numeric(0),                 # número decimal
+  classes = factor(character(0)),    # fator
+  metodo = factor(character(0))      # fator
+)
+```
+
+# Criação do recipe, prep e bake do tidymodels
+```{r, receita}
+# Transformação de dados - formato tidymodels -------------------------------------
+
+set.seed(234)
+#faz a receita e prepara
+(receita <- recipe(stroke ~ ., data = treinamento) %>%
+   step_rm(id) %>% #remove colunas selecionadas
+   step_impute_median(bmi) %>% #substitui com mediana casos nulos
+   step_normalize(all_numeric(), -all_outcomes()) %>%  #normaliza
+   step_other(all_nominal(), -all_outcomes(), threshold = .05, other = "outros") %>% #chama de outros categorias com representatividade abaixo de 5%
+   step_dummy(all_nominal(), -all_outcomes(), one_hot = TRUE) %>% #transforma categoricas em dummies contendo todas categorias nas colunas (one hot)
+   step_zv(all_predictors()) #remove colunas que contem mesmo valor
+   )
+
+(receita_prep <- prep(receita))
+
+# obtem os dados de treinamento processados
+treinamento_proc <- bake(receita_prep, new_data = NULL)
+
+# obtem os dados de teste processados
+teste_proc <- bake(receita_prep, new_data = teste)
+
+# checando os dados processados
+#skim(treinamento_proc)
+#skim(teste_proc)
+
+#treinamento_proc %>% ncol()
+teste %>% ncol()
+teste_proc %>% ncol()
+
+teste %>% glimpse()
+teste_proc %>% glimpse()
+```
+
+# Criação e ajuste dos modelos
+
+### Modelo Random Forest
+```{r}
+# Definir os hiperparâmetros para tunagem
+rf <- rand_forest(trees = tune(), mtry = tune(), min_n = tune()) %>%
+  set_engine("ranger") %>%
+  set_mode("classification")
+
+# CV
+set.seed(234)
+cv_split <- vfold_cv(treinamento, v = 10)
+
+# Paralelização
+doParallel::registerDoParallel(makeCluster(16))
+
+tempo <- system.time({
+  rf_grid <- tune_grid(rf,
+                       receita,
+                       resamples = cv_split,
+                       grid = 100,
+                       metrics = metric_set(roc_auc))
+})
+
+autoplot(rf_grid)  # Plota os resultados do grid search
+
+rf_grid %>%
+  collect_metrics() %>%   # Visualiza o tibble de resultados
+  arrange(desc(mean))
+
+# Seleciona o melhor conjunto de hiperparâmetros
+best_rf <- rf_grid %>%
+  select_best("roc_auc")
+
+tempo #grid = 50, 106s
+
+# Faz o fit do modelo com o melhor conjunto de hiperparâmetros
+rf_fit <- finalize_model(rf, parameters = best_rf) %>%
+  fit(stroke ~ ., data = treinamento_proc)
+
+pred_rf <- predict(rf_fit, new_data = teste_proc, type = "prob")$.pred_1 #pega coluna que dá probabilidade de ter o derrame
+
+desempenho <- desempenho %>% 
+                bind_rows(tibble(prob = pred_rf, 
+                                classes = ifelse(teste_proc$stroke == "1", "Yes", "No"), 
+                                metodo = "Random Forest"))
+
+#desempenho %>% view()
+
+# visualizando variáveis mais importantes
+#vip(rf_fit)
+
+```
+
+### Modelo XGBOOST
+```{r}
+boost <- boost_tree(trees = tune(), learn_rate = tune(), mtry = tune(),
+                    tree_depth = tune(), min_n = tune(), sample_size = tune()) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+
+# cv
+set.seed(234)
+cv_split <- vfold_cv(treinamento, v = 10)
+
+# otimização de hiperparametro
+doParallel::registerDoParallel(16) #colocar nro de cores da maquina
+
+tempo <- system.time({
+  boost_grid <- tune_grid(boost,
+                          receita,
+                          resamples = cv_split,
+                          grid = 100,
+                          metrics = metric_set(roc_auc))
+})
+
+autoplot(boost_grid) # plota os resultados do grid search
+
+boost_grid %>%
+  collect_metrics()  %>%   # visualiza o tibble de resultados
+  arrange(desc(mean))
+
+(best_xgb <- boost_grid %>%
+    select_best("roc_auc")) # salva o melhor conjunto de parametros
+
+tempo #grid = 50, 161s
+
+#faz o fit do modelo com o melhor conjunto de hiperparâmetros
+boost_fit <- finalize_model(boost, parameters = best_xgb) %>%
+  fit(stroke ~ ., treinamento_proc)
+
+pred_xgbm <- predict(boost_fit, new_data = teste_proc, type = "prob")$.pred_1
+
+desempenho <- desempenho %>% 
+                bind_rows(tibble(prob = pred_xgbm, 
+                                classes = ifelse(teste_proc$stroke == "1", "Yes", "No"), 
+                                metodo = "XGBM"))
+
+# visualizando variáveis mais importantes
+vip(boost_fit)
+```
+
+### Redes Neurais
+Definição de estrutura e loading de pesos treinados
+```{r, redes neurais, echo = TRUE, results = 'hide'}
+X_trn <- treinamento_proc %>% dplyr::select(-stroke) %>% as.matrix()
+X_tst <- teste_proc %>% dplyr::select(-stroke) %>% as.matrix()
+
+y_trn <- treinamento_proc$stroke %>% to_categorical()
+y_tst <- teste_proc$stroke %>% to_categorical()
+
+# Modelo Sequencial
+net <- keras_model_sequential() %>%
+  layer_dense(units = 512, activation = "relu", input_shape = ncol(X_trn)) %>%
+  layer_dropout(rate = 0.4) %>%
+  layer_dense(units = 256, activation = "relu") %>%
+  layer_dropout(rate = 0.4) %>%
+  layer_dense(units = 128, activation = "relu") %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 64, activation = "relu") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 32, activation = "relu") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 16, activation = "relu") %>%
+  layer_dropout(rate = 0.1) %>%
+  layer_dense(units = 2, activation = "softmax")  # Camada de saída com ativação sigmoid
+
+
+# definicao do estimador da rede neural
+net %>%
+  compile(loss = "categorical_crossentropy",
+          optimizer = optimizer_rmsprop(),
+          metrics = c("Recall") 
+          )
+
+#accuracy Recall(sensibilidade) Precision
+
+summary(net)
+```
+
+Treina o modelo de redes neurais e salva
+```{r, treina e prediz, eval=FALSE}
+tensorflow::set_random_seed(123)
+
+# Definindo o callback de Early Stopping
+callback <- callback_early_stopping(
+  monitor = "val_loss",  # Métrica a ser monitorada
+  patience = 20,          # Número de épocas para esperar após a parada de melhorias
+  restore_best_weights = TRUE)  # Restaura os pesos do modelo para a melhor época
+
+
+history <- net %>%
+  fit(X_trn, y_trn, epochs = 10000,
+      batch_size = 80, validation_split = 0.2, #DIVIDE O TOTAL DE DADOS EM 80 BLOCOS
+      callbacks = list(callback)) #pega 20% pra validar enquanto roda
+
+#plot(history)
+
+# Salvando os pesos do modelo
+save_model_weights_hdf5(net, "C:/Users/arnch/OneDrive/Documentos/Insper/meus_pesos_modelo.h5")
+```
+
+```{r, tstt}
+# Carregando os pesos salvos no modelo
+net %>% load_model_weights_hdf5("C:/Users/arnch/OneDrive/Documentos/Insper/meus_pesos_modelo.h5")
+
+pred_nn <- predict(net, X_tst)[,2] #prob de apresentar o evento
+```
+
+mede e compara
+```{r Faz previsão mede e compara}
+desempenho <- desempenho %>% 
+                bind_rows(tibble(prob = pred_nn, 
+                                classes = ifelse(teste_proc$stroke == "1", "Yes", "No"), 
+                                metodo = "Neural Networks"))
+```
+
+### Modelo de redes neurais com 40 epocas (sem call back)
+```{r, redes neurais 2, include=FALSE}
+X_trn <- treinamento_proc %>% dplyr::select(-stroke) %>% as.matrix()
+X_tst <- teste_proc %>% dplyr::select(-stroke) %>% as.matrix()
+
+y_trn <- treinamento_proc$stroke %>% to_categorical()
+y_tst <- teste_proc$stroke %>% to_categorical()
+
+# Modelo Sequencial
+net <- keras_model_sequential() %>%
+  layer_dense(units = 512, activation = "relu", input_shape = ncol(X_trn)) %>%
+  layer_dropout(rate = 0.4) %>%
+  layer_dense(units = 256, activation = "relu") %>%
+  layer_dropout(rate = 0.4) %>%
+  layer_dense(units = 128, activation = "relu") %>%
+  layer_dropout(rate = 0.3) %>%
+  layer_dense(units = 64, activation = "relu") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 32, activation = "relu") %>%
+  layer_dropout(rate = 0.2) %>%
+  layer_dense(units = 16, activation = "relu") %>%
+  layer_dropout(rate = 0.1) %>%
+  layer_dense(units = 2, activation = "softmax")  # Camada de saída com ativação sigmoid
+
+
+#definicao do estimador da rede neural
+net %>%
+  compile(loss = "categorical_crossentropy",
+          optimizer = optimizer_rmsprop(),
+          metrics = c("Recall"))
+```
+
+Treina o modelo de redes neurais e salva
+```{r, treina e prediz 2, results = 'hide'}
+tensorflow::set_random_seed(42)
+
+history <- net %>%
+  fit(X_trn, y_trn, epochs = 60,
+      batch_size = 80, validation_split = 0.2) 
+
+pred_nn_2 <- predict(net, X_tst)[,2] #prob de apresentar o evento
+```
+
+mede e compara
+```{r Faz previsão mede e compara 2}
+
+desempenho <- desempenho %>% 
+                bind_rows(tibble(prob = pred_nn_2, 
+                                classes = ifelse(teste_proc$stroke == "1", "Yes", "No"), 
+                                metodo = "Neural Networks - sem callback"))
+
+desempenho %>% 
+  mutate(classes = factor(classes)) %>% 
+  group_by(metodo) %>% 
+  roc_auc(classes, prob, event_level = "second") %>% 
+  arrange(desc(.estimate))
+
+desempenho %>% 
+  mutate(classes = factor(classes)) %>% 
+  group_by(metodo) %>% 
+  roc_curve(classes, prob, event_level = "second") %>% 
+  autoplot()
+```
+
+# Análise aprofundada dos modelos e pontos de corte
+
+Para mensurar o melhor ponto de corte definimos uma variavel chamada "campo" que é o produto de ppv por sensibilidade. Para dar uma importancia maior para sensibilidade
+elevamos ela ao cubo. Para ficar mais fácil de vizualisar o resultado final multiplicamos por 100. Ordenamos em ordem decrescente os 3 principais pontos de corte.
+Estamos considerando todos os gráficos pois, não necessariamente o modelo com maior auc será o melhor para nosso problema em questão.
+
+accuracy: porcentagem de observações marcadas corretamente
+sensitivity: porcentagem de observações positivas marcadas corretamente (taxa de verdadeiros positivos)
+1-specificity: dos casos que não terão derrame (negativos) quanto % eu errei (taxa de falsos positivos)
+ppv: percentual de casos marcados como positivos que são verdadeiramente positivos (% de pessoas que serão chamadas que realmente terão o derrame)
+npv: percentual de casos marcados como negativos que são verdadeiramente negativos (%% das pessoas que não serão chamadas que realmente não teram derrame)
+
+Random Forest:
+```{r}
+coords(roc(teste_proc$stroke, pred_rf), c(seq(.001,.009,.001), seq(.01,.2,.01),seq(.3,.5,.1)),
+       ret = c("threshold","accuracy", "sensitivity", "1-specificity", "ppv", "npv")) %>% 
+       mutate(campo = 100 * ppv * sensitivity^3)  %>% arrange(desc(campo)) %>% head(3) #quanto menor a sensibilidade mais penaliza
+```
+
+Extreme Gradient Boosting
+```{r}
+coords(roc(teste_proc$stroke, pred_xgbm), c(seq(.001,.009,.001), seq(.01,.2,.01),seq(.3,.5,.1)),
+       ret = c("threshold","accuracy", "sensitivity", "1-specificity", "ppv", "npv")) %>% 
+       mutate(campo = 100 * ppv * sensitivity^3)  %>% arrange(desc(campo)) %>% head(3)
+```
+
+Neural Networks
+```{r}
+coords(roc(teste_proc$stroke, pred_nn), c(seq(.001,.009,.001), seq(.01,.2,.01),seq(.3,.5,.1)),
+       ret = c("threshold","accuracy", "sensitivity", "1-specificity", "ppv", "npv")) %>% 
+       mutate(campo = 100 * ppv * sensitivity^3)  %>% arrange(desc(campo)) %>% head(3)
+```
+
+
+Calculo manual do ppv
+```{r}
+threshold <- 0.003
+
+previsoes_1 <- ifelse(pred_nn >= threshold, 1, 0) %>% as.tibble
+
+previsoes_1 <- previsoes_1 %>% 
+                bind_cols(tibble(obs = teste_proc$stroke))
+
+#calculo manual do PPV
+previsoes_1 %>% dplyr::filter(value == 1) %>% dplyr::select(obs) %>% table()
+
+#Percentual de exames diminuidos
+(1-(previsoes_1 %>% dplyr::filter(value == 1) %>% nrow()/nrow(previsoes_1)))*100
+```
+Conclusão: ao fazer exame somente nos casos com 0.6% ou mais de probabilidade de ter derrame, estaremos diminuindo em aproximadamente 42% a quantidade de exames necessárias
+enquanto somente 2% de pessoas que terão derrames não serão contempladas. Levando a ganhos consideraveis para o hospital e ganhos indiretos aos pacientes, uma vez que com menos
+pacientes na fila os exames teoricamente devem sair mais rápido.
+
+De que forma podemos obter ganhos diretos para os pacientes?
+E se quisermos dar prioridade para casos de alto risco? 
+
+```{r}
+#pro ponto de corte de 20% qual modelo possui melhor valor de "campo" ?
+coords(roc(teste_proc$stroke, pred_rf), .2,
+       ret = c("threshold","accuracy", "sensitivity", "1-specificity", "ppv", "npv")) %>% 
+       mutate(campo = 100 * ppv * sensitivity^3)  #quanto menor a sensibilidade mais penaliza
+
+coords(roc(teste_proc$stroke, pred_xgbm), .2,
+       ret = c("threshold","accuracy", "sensitivity", "1-specificity", "ppv", "npv")) %>% 
+       mutate(campo = 100 * ppv * sensitivity^3)  
+
+coords(roc(teste_proc$stroke, pred_nn), .2,
+       ret = c("threshold","accuracy", "sensitivity", "1-specificity", "ppv", "npv")) %>% 
+       mutate(campo = 100 * ppv * sensitivity^3)
+```
+
+Redes Neurais obteve a melhor nota para o corte de 20%
+```{r}
+threshold <- 0.2 #20%
+
+previsoes_2 <- ifelse(pred_nn >= threshold, 1, 0) %>% as.tibble %>% setNames("valor2")
+
+lista_prioritaria <- teste_proc %>% 
+                bind_cols(previsoes_1) %>% bind_cols(previsoes_2)
+
+#lista_prioritaria %>% glimpse()
+
+lista_prioritaria  <- lista_prioritaria %>% mutate(resultado=ifelse(value == 1, "em risco", "sem risco"),
+                                                   resultado = ifelse(valor2 == 1, "urgente", resultado)) %>% dplyr::select(-value, -valor2)
+
+lista_prioritaria$resultado %>% table()
+```
+Geramos uma lista onde marcamos se o paciente vai precisar ou não fazer exame, e caso ele precise marcamos como "urgente" 
+pacientes com igual ou mais de 20% de probabilidade de apresentar derrame.
