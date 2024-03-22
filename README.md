@@ -1,1 +1,3 @@
 This is a project where I used machine learning and some data science techniques to predict the probability of a patient having a stroke based on a dataframe from the file "healthcare-dataset-stroke-data.csv". This project includes the complete pipeline of data cleaning, variable type handling, handling of missing data, collapsing infrequent categorical levels, feature engineering, normalization, dummy encoding, model creation, tuning, and comparison, up to the selection of the best thresholds and analysis of business gains.
+
+Download and open "analise_de_dados_g2_cluster.html" to view the report.
